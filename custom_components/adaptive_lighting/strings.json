@@ -55,6 +55,7 @@
           "take_over_control": "take_over_control: Pause adaptation of individual lights and hand over (manual) control to other sources that issue `light.turn_on` calls for lights that are on. 🔒",
           "take_over_control_mode": "take_over_control_mode",
           "detect_non_ha_changes": "detect_non_ha_changes: Detects and halts adaptations for non-`light.turn_on` state changes. Needs `take_over_control` enabled. 🕵️ Caution: ⚠️ Some lights might falsely indicate an 'on' state, which could result in lights turning on unexpectedly. Note that this calls `homeassistant.update_entity` every `interval`! Disable this feature if you encounter such issues.",
+          "physical_off_guard": "physical_off_guard: After a light turns off (including physical KNX/DALI off), never send `light.turn_on` until a confirmed turn-on. A stable physical on still starts adaptation. 🛡️",
           "autoreset_control_seconds": "autoreset_control_seconds",
           "only_once": "only_once: Adapt lights only when they are turned on (`true`) or keep adapting them (`false`). 🔄",
           "adapt_only_on_bare_turn_on": "adapt_only_on_bare_turn_on: When turning lights on initially. If set to `true`, AL adapts only if `light.turn_on` is invoked without specifying color or brightness. ❌🌈 This e.g., prevents adaptation when activating a scene and marks the light as manually controlled. If `false`, AL adapts regardless of the presence of color or brightness in the initial `service_data`. Needs `take_over_control` enabled. 🕵️",
@@ -262,6 +263,10 @@
         "detect_non_ha_changes": {
           "description": "Detects and halts adaptations for non-`light.turn_on` state changes. Needs `take_over_control` enabled. 🕵️ Caution: ⚠️ Some lights might falsely indicate an 'on' state, which could result in lights turning on unexpectedly. Note that this calls `homeassistant.update_entity` every `interval`! Disable this feature if you encounter such issues.",
           "name": "detect_non_ha_changes"
+        },
+        "physical_off_guard": {
+          "description": "After a light turns off (including physical KNX/DALI off), never send `light.turn_on` until a confirmed turn-on. A stable physical on still starts adaptation.",
+          "name": "physical_off_guard"
         },
         "transition": {
           "description": "Duration of transition when lights change, in seconds. 🕑",

@@ -97,6 +97,7 @@ from .const import (
     CONF_BRIGHTNESS_MODE_TIME_LIGHT,
     CONF_DETECT_NON_HA_CHANGES,
     CONF_INCLUDE_CONFIG_IN_ATTRIBUTES,
+    CONF_PHYSICAL_OFF_GUARD,
     CONF_INITIAL_TRANSITION,
     CONF_INTERCEPT,
     CONF_INTERVAL,
@@ -136,6 +137,7 @@ from .const import (
     ICON_COLOR_TEMP,
     ICON_MAIN,
     ICON_SLEEP,
+    PHYSICAL_ON_CONFIRM_DELAY,
     SERVICE_APPLY,
     SERVICE_CHANGE_SWITCH_SETTINGS,
     SERVICE_SET_MANUAL_CONTROL,
@@ -942,6 +944,7 @@ class AdaptiveSwitch(SwitchEntity, RestoreEntity):
             data[CONF_TAKE_OVER_CONTROL_MODE],
         )
         self._detect_non_ha_changes = data[CONF_DETECT_NON_HA_CHANGES]
+        self._physical_off_guard = data[CONF_PHYSICAL_OFF_GUARD]
         self._adapt_only_on_bare_turn_on = data[CONF_ADAPT_ONLY_ON_BARE_TURN_ON]
         self._auto_reset_manual_control_time = data[CONF_AUTORESET_CONTROL]
         self._skip_redundant_commands = data[CONF_SKIP_REDUNDANT_COMMANDS]
@@ -1475,6 +1478,17 @@ class AdaptiveSwitch(SwitchEntity, RestoreEntity):
                         light,
                         context.id,
                     )
+                elif (
+                    self._physical_off_guard
+                    and self.manager.is_physical_off(light)
+                ):
+                    _LOGGER.debug(
+                        "%s: Light '%s' is guarded after physical/external off, "
+                        "skipping adaptation, context.id='%s'",
+                        self._name,
+                        light,
+                        context.id,
+                    )
                 else:
                     filtered_lights.append(light)
 
@@ -1528,10 +1542,38 @@ class AdaptiveSwitch(SwitchEntity, RestoreEntity):
             entity_id,
             event,
         )
-        if (
+        if from_turn_on:
+            self.manager.clear_physical_off(entity_id)
+        elif self._physical_off_guard:
+            _LOGGER.debug(
+                "%s: physical_off_guard: confirming physical on for '%s' "
+                "for %s seconds, context.id='%s'",
+                self._name,
+                entity_id,
+                PHYSICAL_ON_CONFIRM_DELAY,
+                event.context.id,
+            )
+            await asyncio.sleep(PHYSICAL_ON_CONFIRM_DELAY)
+            if not is_on(self.hass, entity_id):
+                _LOGGER.debug(
+                    "%s: physical_off_guard: '%s' went off during confirm, "
+                    "keeping guard and not adapting, context.id='%s'",
+                    self._name,
+                    entity_id,
+                    event.context.id,
+                )
+                return
+            _LOGGER.debug(
+                "%s: physical_off_guard: confirmed physical on for '%s', "
+                "will adapt, context.id='%s'",
+                self._name,
+                entity_id,
+                event.context.id,
+            )
+            self.manager.clear_physical_off(entity_id)
+        elif (
             self._take_over_control
             and not self._detect_non_ha_changes
-            and not from_turn_on
         ):
             # There is an edge case where 2 switches control the same light, e.g.,
             # one for brightness and one for color. Now we will mark both switches
@@ -1719,6 +1761,9 @@ class AdaptiveLightingManager:
         self.on_to_off_event: dict[str, Event[EventStateChangedData]] = {}
         # Tracks 'off' → 'on' state changes
         self.off_to_on_event: dict[str, Event[EventStateChangedData]] = {}
+        # Lights turned off (physical or HA). Interval must not turn them back on
+        # until a confirmed turn-on (HA service or stable physical on).
+        self.physical_off_at: dict[str, datetime.datetime] = {}
         # Keep 'asyncio.sleep' tasks that can be cancelled by 'light.turn_on' events
         self.sleep_tasks: dict[str, asyncio.Task[None]] = {}
         # Locks that prevent light adjusting when waiting for a light to 'turn_off'
@@ -2358,6 +2403,25 @@ class AdaptiveLightingManager:
             self.last_service_data.pop(light, None)
             self.cancel_ongoing_adaptation_calls(light)
 
+    def mark_physical_off(self, light: str) -> None:
+        """Remember that a light was turned off so interval updates cannot revive it."""
+        self.physical_off_at[light] = dt_util.utcnow()
+        _LOGGER.debug(
+            "physical_off_guard: marked '%s' as externally off at %s",
+            light,
+            self.physical_off_at[light],
+        )
+
+    def clear_physical_off(self, light: str) -> None:
+        """Clear the physical-off guard after a confirmed turn-on."""
+        if light in self.physical_off_at:
+            _LOGGER.debug("physical_off_guard: cleared '%s'", light)
+            self.physical_off_at.pop(light, None)
+
+    def is_physical_off(self, light: str) -> bool:
+        """Return whether the physical-off guard is active for a light."""
+        return light in self.physical_off_at
+
     def _get_entity_list(self, service_data: ServiceData) -> list[str]:
         if ATTR_ENTITY_ID in service_data:
             return cv.ensure_list_csv(service_data[ATTR_ENTITY_ID])
@@ -2406,6 +2470,7 @@ class AdaptiveLightingManager:
             if task is not None:
                 task.cancel()
             self.turn_on_event[eid] = event
+            self.clear_physical_off(eid)
 
             # Only check for manual control via this path if the light was already ON.
             # Turning on from OFF is handled separately in _respond_to_off_to_on_event,
@@ -2552,6 +2617,7 @@ class AdaptiveLightingManager:
             # Tracks 'on' → 'off' state changes
             self.on_to_off_event[entity_id] = event
             self.reset(entity_id)
+            self.mark_physical_off(entity_id)
             _LOGGER.debug(
                 "Detected an 'on' → 'off' event for '%s' with context.id='%s'",
                 entity_id,

@@ -240,6 +240,12 @@ change_switch_settings:
       example: false
       selector:
         boolean: null
+    physical_off_guard:
+      description: After a light turns off (including physical KNX/DALI off), never send `light.turn_on` until a confirmed turn-on. A stable physical on still starts adaptation.
+      required: false
+      example: true
+      selector:
+        boolean: null
     transition:
       description: Duration of transition when lights change, in seconds. 🕑
       required: false

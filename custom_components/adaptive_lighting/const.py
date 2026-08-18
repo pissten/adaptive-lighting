@@ -47,6 +47,17 @@ DOCS[CONF_DETECT_NON_HA_CHANGES] = (
     "Disable this feature if you encounter such issues."
 )
 
+CONF_PHYSICAL_OFF_GUARD, DEFAULT_PHYSICAL_OFF_GUARD = (
+    "physical_off_guard",
+    True,
+)
+DOCS[CONF_PHYSICAL_OFF_GUARD] = (
+    "After a light turns off (including physical KNX/DALI off), never send "
+    "`light.turn_on` until a confirmed turn-on. A stable physical on still "
+    "starts adaptation. Prevents lights from being turned back on by interval "
+    "updates or stale state. 🛡️"
+)
+
 CONF_INCLUDE_CONFIG_IN_ATTRIBUTES, DEFAULT_INCLUDE_CONFIG_IN_ATTRIBUTES = (
     "include_config_in_attributes",
     False,
@@ -298,6 +309,7 @@ DOCS[CONF_USE_DEFAULTS] = (
 )
 
 TURNING_OFF_DELAY = 5
+PHYSICAL_ON_CONFIRM_DELAY = 2
 
 DOCS_MANUAL_CONTROL = {
     CONF_ENTITY_ID: "The `entity_id` of the switch in which to (un)mark the "
@@ -387,6 +399,7 @@ VALIDATION_TUPLES: list[tuple[str, Any, Any]] = [
         ),
     ),
     (CONF_DETECT_NON_HA_CHANGES, DEFAULT_DETECT_NON_HA_CHANGES, bool),
+    (CONF_PHYSICAL_OFF_GUARD, DEFAULT_PHYSICAL_OFF_GUARD, bool),
     (
         CONF_AUTORESET_CONTROL,
         DEFAULT_AUTORESET_CONTROL,
