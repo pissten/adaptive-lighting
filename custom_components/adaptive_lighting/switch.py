@@ -1349,6 +1349,14 @@ class AdaptiveSwitch(SwitchEntity, RestoreEntity):
                 # All service datas processed
                 break
 
+            if self.manager.is_physical_off(data.entity_id):
+                _LOGGER.debug(
+                    "%s: Skipping adaptation of %s because physical_off_guard is active",
+                    self._name,
+                    data.entity_id,
+                )
+                return
+
             if (
                 not data.force
                 and not is_on(self.hass, data.entity_id)
@@ -2406,10 +2414,39 @@ class AdaptiveLightingManager:
     def mark_physical_off(self, light: str) -> None:
         """Remember that a light was turned off so interval updates cannot revive it."""
         self.physical_off_at[light] = dt_util.utcnow()
+        self.cancel_ongoing_adaptation_calls(light)
         _LOGGER.debug(
             "physical_off_guard: marked '%s' as externally off at %s",
             light,
             self.physical_off_at[light],
+        )
+        # An interval turn_on may already be inside the KNX pipeline. Undo it
+        # shortly after if the resulting 'on' was ours.
+        self.hass.async_create_task(
+            self._undo_in_flight_turn_on(light),
+            name=f"physical_off_guard_undo_{light}",
+        )
+
+    async def _undo_in_flight_turn_on(self, light: str) -> None:
+        """Turn the light back off if our own in-flight adapt turned it on."""
+        await asyncio.sleep(0.6)
+        if not self.is_physical_off(light):
+            return
+        if not is_on(self.hass, light):
+            return
+        state = self.hass.states.get(light)
+        if state is None or not is_our_context(state.context):
+            return
+        _LOGGER.debug(
+            "physical_off_guard: undoing in-flight turn_on for '%s' (context.id='%s')",
+            light,
+            state.context.id,
+        )
+        await self.hass.services.async_call(
+            LIGHT_DOMAIN,
+            SERVICE_TURN_OFF,
+            {ATTR_ENTITY_ID: light},
+            blocking=True,
         )
 
     def clear_physical_off(self, light: str) -> None:
@@ -2651,6 +2688,8 @@ class AdaptiveLightingManager:
                         "Cancelling adjusting lights for %s",
                         entity_id,
                     )
+                    self.cancel_ongoing_adaptation_calls(entity_id)
+                    self.mark_physical_off(entity_id)
                     return
 
             switches = _switches_with_lights(self.hass, [entity_id])
