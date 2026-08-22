@@ -53,9 +53,10 @@ CONF_PHYSICAL_OFF_GUARD, DEFAULT_PHYSICAL_OFF_GUARD = (
 )
 DOCS[CONF_PHYSICAL_OFF_GUARD] = (
     "After a light turns off (including physical KNX/DALI off), never send "
-    "`light.turn_on` until a confirmed turn-on. A stable physical on still "
-    "starts adaptation. Prevents lights from being turned back on by interval "
-    "updates or stale state. 🛡️"
+    "`light.turn_on` until a confirmed turn-on. Incoming KNX off telegrams "
+    "stop adaptation immediately and block follow-up brightness writes so "
+    "the light does not blink on. A stable physical on still starts "
+    "adaptation. 🛡️"
 )
 
 CONF_INCLUDE_CONFIG_IN_ATTRIBUTES, DEFAULT_INCLUDE_CONFIG_IN_ATTRIBUTES = (

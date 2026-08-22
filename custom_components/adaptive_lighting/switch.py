@@ -150,6 +150,7 @@ from .const import (
     replace_none_str,
 )
 from .hass_utils import area_entities, setup_service_call_interceptor
+from .knx_bus import KnxPhysicalOffHook
 from .helpers import (
     clamp,
     color_difference_redmean,
@@ -1810,6 +1811,15 @@ class AdaptiveLightingManager:
 
         self._proactively_adapting_contexts: dict[str, str] = {}
         self._context_cnt: int = 0
+        self._knx_hook = KnxPhysicalOffHook(hass, self)
+        self._setup_knx_hook()
+        self.listener_removers.append(self._knx_hook.unhook)
+        self.listener_removers.append(
+            self.hass.bus.async_listen_once(
+                EVENT_HOMEASSISTANT_STARTED,
+                self._setup_knx_hook_event,
+            ),
+        )
 
         try:
             self.listener_removers.append(
@@ -1835,6 +1845,15 @@ class AdaptiveLightingManager:
                 "falling back to event-reactive mode",
                 exc_info=True,
             )
+
+    def _setup_knx_hook(self) -> None:
+        """Attach KNX off-telegram hooks when the KNX integration is available."""
+        if self._knx_hook.setup():
+            return
+        _LOGGER.debug("physical_off_guard: KNX integration not available yet")
+
+    async def _setup_knx_hook_event(self, _event: Event) -> None:
+        self._setup_knx_hook()
 
     def disable(self) -> None:
         """Disable the listener by removing all subscribed handlers."""
@@ -2413,6 +2432,7 @@ class AdaptiveLightingManager:
 
     def mark_physical_off(self, light: str) -> None:
         """Remember that a light was turned off so interval updates cannot revive it."""
+        self._setup_knx_hook()
         self.physical_off_at[light] = dt_util.utcnow()
         self.cancel_ongoing_adaptation_calls(light)
         _LOGGER.debug(
