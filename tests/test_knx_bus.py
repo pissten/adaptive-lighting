@@ -6,7 +6,9 @@ from unittest.mock import MagicMock
 from homeassistant.components.adaptive_lighting.knx_bus import (
     KnxPhysicalOffHook,
     is_group_write_or_response,
+    payload_brightness_is_zero,
     payload_is_binary_off,
+    payload_is_brightness,
     telegram_destination,
 )
 
@@ -93,6 +95,54 @@ def test_incoming_on_does_not_mark_physical_off():
         ),
     )
     manager.mark_physical_off.assert_not_called()
+    manager.notify_knx_physical_on.assert_called_once_with("light.downlights_stue")
+
+
+def test_payload_is_brightness():
+    """Brightness payloads are 1-byte arrays, not 1-bit on/off."""
+    assert payload_is_brightness(GroupValueWrite(DPTArray((64,))))
+    assert not payload_is_brightness(GroupValueWrite(DPTBinary(1)))
+    assert not payload_is_brightness(GroupValueRead())
+    assert payload_brightness_is_zero(GroupValueWrite(DPTArray((0,))))
+    assert not payload_brightness_is_zero(GroupValueWrite(DPTArray((64,))))
+
+
+def test_incoming_brightness_notifies_physical_on():
+    """Incoming brightness on the dimming address starts immediate adaptation."""
+    manager = MagicMock()
+    manager.lights = {"light.bad"}
+    hook = KnxPhysicalOffHook(hass=MagicMock(), manager=manager)
+    hook._off_listen = {}
+    hook._brightness_listen = {"1/4/2": ["light.bad"]}
+    hook._map_key = frozenset(manager.lights)
+
+    hook._on_incoming(
+        SimpleNamespace(
+            destination_address="1/4/2",
+            payload=GroupValueWrite(DPTArray((64,))),
+        ),
+    )
+    manager.notify_knx_brightness.assert_called_once_with("light.bad")
+    manager.mark_physical_off.assert_not_called()
+
+
+def test_incoming_brightness_zero_marks_physical_off():
+    """Brightness 0% is treated as off, not as a PIR turn-on."""
+    manager = MagicMock()
+    manager.lights = {"light.bad"}
+    hook = KnxPhysicalOffHook(hass=MagicMock(), manager=manager)
+    hook._off_listen = {}
+    hook._brightness_listen = {"1/4/2": ["light.bad"]}
+    hook._map_key = frozenset(manager.lights)
+
+    hook._on_incoming(
+        SimpleNamespace(
+            destination_address="1/4/2",
+            payload=GroupValueWrite(DPTArray((0,))),
+        ),
+    )
+    manager.mark_physical_off.assert_called_once_with("light.bad")
+    manager.notify_knx_brightness.assert_not_called()
 
 
 def test_should_drop_brightness_when_guarded():

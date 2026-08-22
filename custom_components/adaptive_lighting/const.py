@@ -55,8 +55,9 @@ DOCS[CONF_PHYSICAL_OFF_GUARD] = (
     "After a light turns off (including physical KNX/DALI off), never send "
     "`light.turn_on` until a confirmed turn-on. Incoming KNX off telegrams "
     "stop adaptation immediately and block follow-up brightness writes so "
-    "the light does not blink on. A stable physical on still starts "
-    "adaptation. 🛡️"
+    "the light does not blink on. Incoming KNX on/brightness (e.g. PIR) "
+    "applies the currently calculated Adaptive Lighting values immediately "
+    "instead of waiting for the next interval. 🛡️"
 )
 
 CONF_INCLUDE_CONFIG_IN_ATTRIBUTES, DEFAULT_INCLUDE_CONFIG_IN_ATTRIBUTES = (
@@ -311,6 +312,10 @@ DOCS[CONF_USE_DEFAULTS] = (
 
 TURNING_OFF_DELAY = 5
 PHYSICAL_ON_CONFIRM_DELAY = 2
+# Wait this long after a KNX ON for a brightness telegram (PIR often sends both).
+KNX_PHYSICAL_ON_BRIGHTNESS_WAIT = 0.15
+# Treat incoming brightness as a turn-on only inside this window after KNX ON.
+KNX_PHYSICAL_ON_WINDOW = 0.5
 
 DOCS_MANUAL_CONTROL = {
     CONF_ENTITY_ID: "The `entity_id` of the switch in which to (un)mark the "

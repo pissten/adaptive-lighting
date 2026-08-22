@@ -1,10 +1,14 @@
-"""KNX bus hooks so a physical off stops adaptation before brightness is written.
+"""KNX bus hooks so physical off/on is handled on the telegram, not the HA state.
 
 Incoming GroupValueWrite/Response OFF on a light's switch/state address marks the
 light as physically off immediately (before HA entity state_changed). Outgoing
 brightness/ON telegrams for a guarded light are dropped in the xknx outgoing
 queue so an already-started Adaptive Lighting ``light.turn_on`` cannot blink
 the fixture back on.
+
+Incoming ON and brightness writes (PIR, wall button) start adaptation immediately
+using Adaptive Lighting's currently calculated values, without waiting for the
+interval.
 """
 
 from __future__ import annotations
@@ -69,6 +73,26 @@ def payload_is_binary_off(payload: Any) -> bool | None:
     return None
 
 
+def payload_is_brightness(payload: Any) -> bool:
+    """Return whether the payload is a dimming/brightness write, not 1-bit on/off."""
+    if not is_group_write_or_response(payload):
+        return False
+    return payload_is_binary_off(payload) is None
+
+
+def payload_brightness_is_zero(payload: Any) -> bool:
+    """Return whether a brightness payload is 0% (treated as off)."""
+    value = getattr(payload, "value", None)
+    if value is None:
+        return False
+    raw = getattr(value, "value", value)
+    if isinstance(raw, (bytes, bytearray, tuple, list)):
+        raw = raw[0] if raw else 0
+    if isinstance(raw, int):
+        return raw == 0
+    return False
+
+
 def _ga_strings(group_address: Any) -> list[str]:
     if group_address is None:
         return []
@@ -104,28 +128,31 @@ def _iter_on_remote_values(device: Any) -> list[Any]:
 def collect_light_addresses(
     hass: Any,
     lights: set[str],
-) -> tuple[dict[str, list[str]], dict[str, list[str]], set[str]]:
+) -> tuple[dict[str, list[str]], dict[str, list[str]], set[str], dict[str, list[str]]]:
     """Map KNX group addresses for Adaptive Lighting lights.
 
     Returns
     -------
     off_listen
-        Switch command/state addresses that mean the light was turned off.
+        Switch command/state addresses that mean the light was turned off/on.
     block
         Addresses whose outgoing writes would turn the light on (switch + brightness/color).
     switch_gas
         Switch *command* addresses, so outgoing OFF is still allowed (HA turn_off / undo).
+    brightness_listen
+        Brightness command/state addresses (PIR absolute dimming).
     """
     off_listen: dict[str, list[str]] = {}
     block: dict[str, list[str]] = {}
     switch_gas: set[str] = set()
+    brightness_listen: dict[str, list[str]] = {}
     if not lights:
-        return off_listen, block, switch_gas
+        return off_listen, block, switch_gas, brightness_listen
 
     try:
         from homeassistant.helpers.entity_platform import async_get_platforms
     except ImportError:
-        return off_listen, block, switch_gas
+        return off_listen, block, switch_gas, brightness_listen
 
     for platform in async_get_platforms(hass, KNX_DOMAIN):
         if getattr(platform, "domain", None) != "light":
@@ -144,10 +171,22 @@ def collect_light_addresses(
                 _add_ga(off_listen, state, entity_id)
                 _add_ga(block, command, entity_id)
                 switch_gas.update(_ga_strings(command))
+            brightness = getattr(device, "brightness", None)
+            if brightness is not None:
+                _add_ga(
+                    brightness_listen,
+                    getattr(brightness, "group_address", None),
+                    entity_id,
+                )
+                _add_ga(
+                    brightness_listen,
+                    getattr(brightness, "group_address_state", None),
+                    entity_id,
+                )
             for remote_value in _iter_on_remote_values(device):
                 _add_ga(block, getattr(remote_value, "group_address", None), entity_id)
 
-    return off_listen, block, switch_gas
+    return off_listen, block, switch_gas, brightness_listen
 
 
 class KnxPhysicalOffHook:
@@ -162,6 +201,7 @@ class KnxPhysicalOffHook:
         self._off_listen: dict[str, list[str]] = {}
         self._block: dict[str, list[str]] = {}
         self._switch_gas: set[str] = set()
+        self._brightness_listen: dict[str, list[str]] = {}
         self._map_key: frozenset[str] | None = None
 
     @property
@@ -217,7 +257,12 @@ class KnxPhysicalOffHook:
         key = frozenset(self.manager.lights)
         if key == self._map_key:
             return
-        self._off_listen, self._block, self._switch_gas = collect_light_addresses(
+        (
+            self._off_listen,
+            self._block,
+            self._switch_gas,
+            self._brightness_listen,
+        ) = collect_light_addresses(
             self.hass,
             self.manager.lights,
         )
@@ -229,30 +274,66 @@ class KnxPhysicalOffHook:
             )
 
     def _on_incoming(self, telegram: Any) -> None:
-        """Mark physical off as soon as an incoming OFF hits a switch address."""
+        """Handle incoming OFF/ON/brightness before HA entity state_changed."""
         if not self.manager.lights:
             return
         dest = telegram_destination(telegram)
         if dest is None:
             return
         self.refresh_map()
-        lights = self._off_listen.get(dest)
-        if not lights:
-            return
         payload = getattr(telegram, "payload", None)
         if not is_group_write_or_response(payload):
             return
-        if payload_is_binary_off(payload) is not True:
-            return
-        for light in lights:
-            if light not in self.manager.lights:
-                continue
-            _LOGGER.debug(
-                "physical_off_guard: incoming KNX OFF on %s for '%s'",
-                dest,
-                light,
-            )
-            self.manager.mark_physical_off(light)
+
+        switch_lights = self._off_listen.get(dest)
+        if switch_lights:
+            binary_off = payload_is_binary_off(payload)
+            if binary_off is True:
+                for light in switch_lights:
+                    if light not in self.manager.lights:
+                        continue
+                    _LOGGER.debug(
+                        "physical_off_guard: incoming KNX OFF on %s for '%s'",
+                        dest,
+                        light,
+                    )
+                    self.manager.mark_physical_off(light)
+                return
+            if binary_off is False:
+                for light in switch_lights:
+                    if light not in self.manager.lights:
+                        continue
+                    _LOGGER.debug(
+                        "physical_off_guard: incoming KNX ON on %s for '%s'",
+                        dest,
+                        light,
+                    )
+                    self.manager.notify_knx_physical_on(light)
+                return
+
+        brightness_lights = self._brightness_listen.get(dest)
+        if brightness_lights and payload_is_brightness(payload):
+            if payload_brightness_is_zero(payload):
+                for light in brightness_lights:
+                    if light not in self.manager.lights:
+                        continue
+                    _LOGGER.debug(
+                        "physical_off_guard: incoming KNX brightness 0 on %s "
+                        "for '%s'",
+                        dest,
+                        light,
+                    )
+                    self.manager.mark_physical_off(light)
+                return
+            for light in brightness_lights:
+                if light not in self.manager.lights:
+                    continue
+                _LOGGER.debug(
+                    "physical_off_guard: incoming KNX brightness on %s for '%s'",
+                    dest,
+                    light,
+                )
+                self.manager.notify_knx_brightness(light)
 
     async def _process_outgoing(self, telegram: Any) -> None:
         if self._should_drop(telegram):

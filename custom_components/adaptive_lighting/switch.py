@@ -137,6 +137,8 @@ from .const import (
     ICON_COLOR_TEMP,
     ICON_MAIN,
     ICON_SLEEP,
+    KNX_PHYSICAL_ON_BRIGHTNESS_WAIT,
+    KNX_PHYSICAL_ON_WINDOW,
     PHYSICAL_ON_CONFIRM_DELAY,
     SERVICE_APPLY,
     SERVICE_CHANGE_SWITCH_SETTINGS,
@@ -1554,6 +1556,16 @@ class AdaptiveSwitch(SwitchEntity, RestoreEntity):
         if from_turn_on:
             self.manager.clear_physical_off(entity_id)
         elif self._physical_off_guard:
+            if self.manager.is_knx_physical_on_pending(entity_id):
+                _LOGGER.debug(
+                    "%s: physical_off_guard: KNX already handling physical on "
+                    "for '%s', skipping HA confirm delay, context.id='%s'",
+                    self._name,
+                    entity_id,
+                    event.context.id,
+                )
+                self.manager.clear_physical_off(entity_id)
+                return
             _LOGGER.debug(
                 "%s: physical_off_guard: confirming physical on for '%s' "
                 "for %s seconds, context.id='%s'",
@@ -1773,6 +1785,10 @@ class AdaptiveLightingManager:
         # Lights turned off (physical or HA). Interval must not turn them back on
         # until a confirmed turn-on (HA service or stable physical on).
         self.physical_off_at: dict[str, datetime.datetime] = {}
+        # KNX physical-on window (PIR ON + optional brightness telegram).
+        self._knx_physical_on_at: dict[str, datetime.datetime] = {}
+        self._knx_on_adapt_tasks: dict[str, asyncio.Task[None]] = {}
+        self._knx_on_waiting: dict[str, bool] = {}
         # Keep 'asyncio.sleep' tasks that can be cancelled by 'light.turn_on' events
         self.sleep_tasks: dict[str, asyncio.Task[None]] = {}
         # Locks that prevent light adjusting when waiting for a light to 'turn_off'
@@ -1857,6 +1873,8 @@ class AdaptiveLightingManager:
 
     def disable(self) -> None:
         """Disable the listener by removing all subscribed handlers."""
+        for light in list(self._knx_on_adapt_tasks):
+            self._cancel_knx_physical_on_adapt(light)
         for remove in self.listener_removers:
             remove()
 
@@ -2433,6 +2451,8 @@ class AdaptiveLightingManager:
     def mark_physical_off(self, light: str) -> None:
         """Remember that a light was turned off so interval updates cannot revive it."""
         self._setup_knx_hook()
+        self._cancel_knx_physical_on_adapt(light)
+        self._knx_physical_on_at.pop(light, None)
         self.physical_off_at[light] = dt_util.utcnow()
         self.cancel_ongoing_adaptation_calls(light)
         _LOGGER.debug(
@@ -2478,6 +2498,104 @@ class AdaptiveLightingManager:
     def is_physical_off(self, light: str) -> bool:
         """Return whether the physical-off guard is active for a light."""
         return light in self.physical_off_at
+
+    def is_knx_physical_on_pending(self, light: str) -> bool:
+        """Return whether a KNX physical-on is in the short takeover window."""
+        started = self._knx_physical_on_at.get(light)
+        if started is None:
+            return False
+        return (dt_util.utcnow() - started).total_seconds() < KNX_PHYSICAL_ON_WINDOW
+
+    def notify_knx_physical_on(self, light: str) -> None:
+        """KNX ON telegram: wait briefly for brightness, then adapt now."""
+        if not self._switch_wants_knx_physical_on(light):
+            return
+        self.clear_physical_off(light)
+        self.reset(light, reset_manual_control=True)
+        self._knx_physical_on_at[light] = dt_util.utcnow()
+        self._schedule_knx_physical_on_adapt(light, KNX_PHYSICAL_ON_BRIGHTNESS_WAIT)
+
+    def notify_knx_brightness(self, light: str) -> None:
+        """KNX brightness telegram: adapt immediately if this is a turn-on."""
+        if not self._switch_wants_knx_physical_on(light):
+            return
+        if not (
+            self.is_knx_physical_on_pending(light)
+            or self._brightness_means_turn_on(light)
+        ):
+            return
+        self.clear_physical_off(light)
+        self.reset(light, reset_manual_control=True)
+        self._knx_physical_on_at[light] = dt_util.utcnow()
+        self._schedule_knx_physical_on_adapt(light, 0)
+
+    def _brightness_means_turn_on(self, light: str) -> bool:
+        """Return whether a brightness write should be treated as a physical on."""
+        if self.is_physical_off(light):
+            return True
+        state = self.hass.states.get(light)
+        return state is None or state.state != STATE_ON
+
+    def _switch_wants_knx_physical_on(self, light: str) -> bool:
+        """Return whether an enabled Adaptive Lighting switch wants KNX on-adapt."""
+        try:
+            switches = _switches_with_lights(self.hass, [light])
+        except (KeyError, ValueError):
+            return False
+        return any(switch.is_on and switch._physical_off_guard for switch in switches)
+
+    def _cancel_knx_physical_on_adapt(self, light: str) -> None:
+        task = self._knx_on_adapt_tasks.pop(light, None)
+        self._knx_on_waiting.pop(light, None)
+        if task is not None and not task.done():
+            task.cancel()
+
+    def _schedule_knx_physical_on_adapt(self, light: str, delay: float) -> None:
+        """Schedule calculated Adaptive Lighting values after a KNX turn-on."""
+        existing = self._knx_on_adapt_tasks.get(light)
+        if existing is not None and not existing.done():
+            if delay == 0 and self._knx_on_waiting.get(light):
+                existing.cancel()
+            else:
+                return
+
+        async def _run() -> None:
+            try:
+                if delay:
+                    await asyncio.sleep(delay)
+                if self.is_physical_off(light):
+                    return
+                await self._adapt_knx_physical_on(light)
+            except asyncio.CancelledError:
+                raise
+
+        self._knx_on_waiting[light] = delay > 0
+        self._knx_on_adapt_tasks[light] = self.hass.async_create_task(
+            _run(),
+            name=f"knx_physical_on_{light}",
+        )
+
+    async def _adapt_knx_physical_on(self, light: str) -> None:
+        """Apply the currently calculated Adaptive Lighting values immediately."""
+        self._knx_on_waiting.pop(light, None)
+        try:
+            switches = _switches_with_lights(self.hass, [light])
+        except (KeyError, ValueError):
+            return
+        for switch in switches:
+            if not switch.is_on or not switch._physical_off_guard:
+                continue
+            _LOGGER.debug(
+                "physical_off_guard: adapting '%s' immediately after KNX physical on "
+                "(using calculated brightness/color, transition=0)",
+                light,
+            )
+            await switch._update_attrs_and_maybe_adapt_lights(
+                context=switch.create_context("knx_physical_on"),
+                lights=[light],
+                transition=0,
+                force=True,
+            )
 
     def _get_entity_list(self, service_data: ServiceData) -> list[str]:
         if ATTR_ENTITY_ID in service_data:

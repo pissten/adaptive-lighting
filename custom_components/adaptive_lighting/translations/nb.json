@@ -38,7 +38,7 @@
           "sunset_time": "'sunset_time': definer tidspunktet for solnedgang manuelt (i følgende format: TT:MM:SS - f. eks: '20:30:00' vil definere tidspunktet for solnegang som halv-ni på kvelden)",
           "take_over_control": "'take_over_control': dersom en annen tjeneste enn adaptiv belysning skrur lysene av eller på, vil automatisk adaptering av lyset stoppes inntil lyset (eller den tilhørende bryteren for adaptiv belysning) blir slått av - og på igjen",
           "detect_non_ha_changes": "'detect_non_ha_changes': registrerer alle endringer i lysstyrke over 10% med opprinnelse utenfor Home Assistant - krever at 'take_over_control' er aktivert (OBS: tilkaller 'homeassistant.update_entity' ved hvert 'interval'!)",
-          "physical_off_guard": "physical_off_guard: Etter at et lys slås av (også fysisk via KNX/DALI) sendes aldri `light.turn_on` før en bekreftet tenning. Innkommende KNX-av-telegrammer stopper tilpasning med en gang og blokkerer etterfølgende lysstyrke-skriving. Stabil fysisk på starter likevel tilpasning. 🛡️",
+          "physical_off_guard": "physical_off_guard: Etter at et lys slås av (også fysisk via KNX/DALI) sendes aldri `light.turn_on` før en bekreftet tenning. Innkommende KNX-av-telegrammer stopper tilpasning med en gang og blokkerer etterfølgende lysstyrke-skriving. Innkommende KNX på/lysstyrke bruker de kalkulerte Adaptive Lighting-verdiene med en gang. 🛡️",
           "transition": "'transition': varigheten (i sekunder) på overgangen når lysene oppdateres ",
           "transition_until_sleep": "transition_until_sleep: Når aktivert, Adaptive lightning vil behandle sove innstillingene som minimum, bevege seg til disse verdiene etter solnedgang.",
           "skip_redundant_commands": "skip_redundant_commands:  Dropp sending av tilpassnings kommandoer hvor målets tilstand allerede er lik den kjente tilstanden til lyset. Minimerer nettverk trafikk og forbedrer tilpasningens responsitivitet i noen situasjoner. Skru av hvis fysisk tilstand til lyset er ute av synkronisering med HA´s registrere tilstand.",
@@ -154,7 +154,7 @@
           "description": "Detekterer og stopper tilpasningen for ikke-`light.turn_on` tilstander . Trenger  `take_over_control` aktivert. Advarsel: Noen lys kan gi falske signal om  'on' tilstand, som kan medføre at lysene  skrur seg på av seg selv. Skru av denne funksjonen om dette inntreffer."
         },
         "physical_off_guard": {
-          "description": "Etter at et lys slås av (også fysisk via KNX/DALI) sendes aldri `light.turn_on` før en bekreftet tenning. Stabil fysisk på starter likevel tilpasning."
+          "description": "Etter at et lys slås av (også fysisk via KNX/DALI) sendes aldri `light.turn_on` før en bekreftet tenning. Innkommende KNX på/lysstyrke bruker de kalkulerte Adaptive Lighting-verdiene med en gang."
         },
         "autoreset_control_seconds": {
           "description": "Automatisk reset manuell kontroll etter et gitt antall sekunder. Sett til 0 for å skru av."
